@@ -17,7 +17,7 @@ Pod::Spec.new do |s|
   s.author             = { "matrix.org" => "support@matrix.org" }
   s.social_media_url   = "http://twitter.com/matrixdotorg"
 
-  s.swift_version = '5.0'
+  s.swift_version = '4.0'
 
   s.ios.deployment_target = "8.0"
   s.osx.deployment_target = "10.10"
