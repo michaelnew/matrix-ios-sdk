@@ -28,6 +28,15 @@ import Foundation
  `MXEventTypeString` must be checked.
  */
 public enum MXEventType: Equatable, Hashable {
+    
+    public static func ==(lhs: MXEventType, rhs: MXEventType) -> Bool {
+        return lhs.identifier == rhs.identifier
+    }
+
+    public var hashValue: Int {
+        return self.identifier.hashValue
+    }
+    
     case roomName
     case roomTopic
     case roomAvatar
@@ -123,6 +132,10 @@ public enum MXEventType: Equatable, Hashable {
 
 /// Types of messages
 public enum MXMessageType: Equatable, Hashable {
+    public static func ==(lhs: MXMessageType, rhs: MXMessageType) -> Bool {
+        return lhs.identifier == rhs.identifier
+    }
+    
     case text, emote, notice, image, audio, video, location, file
     case custom(String)
     
@@ -143,6 +156,10 @@ public enum MXMessageType: Equatable, Hashable {
     public init(identifier: String) {
         let messages: [MXMessageType] = [.text, .emote, .notice, .image, .audio, .video, .location, .file]
         self = messages.first(where: { $0.identifier == identifier }) ?? .custom(identifier)
+    }
+
+    public var hashValue: Int {
+        return self.identifier.hashValue
     }
 }
 

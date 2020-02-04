@@ -79,7 +79,7 @@ public extension MXIdentityService {
             // [[<(MX3PIDMedium)media>, <(NSString*)address>, <(NSString*)userId>], ...].
             var responseDictionary = [MX3PID: String]()
             triplets
-                .compactMap { return $0 as? [String] }
+                .flatMap { return $0 as? [String] }
                 .forEach { triplet in
                     
                     // Make sure the array contains 3 items
