@@ -19,14 +19,14 @@
 NS_ASSUME_NONNULL_BEGIN
 
 /**
- A summary of users trust level provides trusted users and devices count.
+ A summary of the trust for a group of users and their devices
  */
-@interface MXUsersTrustLevelSummary : NSObject
+@interface MXUsersTrustLevelSummary : NSObject <NSCoding>
 
-// The number of trusted users and total members count throught a NSProgress object.
+// The ratio of trusted users
 @property (nonatomic, strong, readonly) NSProgress *trustedUsersProgress;
 
-// The number of trusted devices and total devices count throught a NSProgress object.
+// The ratio of trusted devices for trusted users
 @property (nonatomic, strong, readonly) NSProgress *trustedDevicesProgress;
 
 - (instancetype)initWithTrustedUsersProgress:(NSProgress*)trustedUsersProgress andTrustedDevicesProgress:(NSProgress*)trustedDevicesProgress;
