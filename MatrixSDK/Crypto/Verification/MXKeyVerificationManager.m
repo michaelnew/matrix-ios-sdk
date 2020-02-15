@@ -15,8 +15,8 @@
  limitations under the License.
  */
 
-#import "MXDeviceVerificationManager.h"
-#import "MXDeviceVerificationManager_Private.h"
+#import "MXKeyVerificationManager.h"
+#import "MXKeyVerificationManager_Private.h"
 
 #import "MXSession.h"
 #import "MXCrypto_Private.h"
@@ -33,11 +33,11 @@
 
 #pragma mark - Constants
 
-NSString *const MXDeviceVerificationErrorDomain = @"org.matrix.sdk.verification";
-NSString *const MXDeviceVerificationManagerNewRequestNotification       = @"MXDeviceVerificationManagerNewRequestNotification";
-NSString *const MXDeviceVerificationManagerNotificationRequestKey       = @"MXDeviceVerificationManagerNotificationRequestKey";
-NSString *const MXDeviceVerificationManagerNewTransactionNotification   = @"MXDeviceVerificationManagerNewTransactionNotification";
-NSString *const MXDeviceVerificationManagerNotificationTransactionKey   = @"MXDeviceVerificationManagerNotificationTransactionKey";
+NSString *const MXKeyVerificationErrorDomain = @"org.matrix.sdk.verification";
+NSString *const MXKeyVerificationManagerNewRequestNotification       = @"MXKeyVerificationManagerNewRequestNotification";
+NSString *const MXKeyVerificationManagerNotificationRequestKey       = @"MXKeyVerificationManagerNotificationRequestKey";
+NSString *const MXKeyVerificationManagerNewTransactionNotification   = @"MXKeyVerificationManagerNewTransactionNotification";
+NSString *const MXKeyVerificationManagerNotificationTransactionKey   = @"MXKeyVerificationManagerNotificationTransactionKey";
 
 // Transaction timeout in seconds
 NSTimeInterval const MXTransactionTimeout = 10 * 60.0;
@@ -45,16 +45,16 @@ NSTimeInterval const MXTransactionTimeout = 10 * 60.0;
 // Request timeout in seconds
 NSTimeInterval const MXRequestDefaultTimeout = 5 * 60.0;
 
-static NSArray<MXEventTypeString> *kMXDeviceVerificationManagerDMEventTypes;
+static NSArray<MXEventTypeString> *kMXKeyVerificationManagerDMEventTypes;
 
 
-@interface MXDeviceVerificationManager ()
+@interface MXKeyVerificationManager ()
 {
     // The queue to run background tasks
     dispatch_queue_t cryptoQueue;
 
     // All running transactions
-    MXUsersDevicesMap<MXDeviceVerificationTransaction*> *transactions;
+    MXUsersDevicesMap<MXKeyVerificationTransaction*> *transactions;
     // Timer to cancel transactions
     NSTimer *transactionTimeoutTimer;
 
@@ -69,37 +69,77 @@ static NSArray<MXEventTypeString> *kMXDeviceVerificationManagerDMEventTypes;
 }
 @end
 
-@implementation MXDeviceVerificationManager
+@implementation MXKeyVerificationManager
 
 #pragma mark - Public methods -
 
 #pragma mark Requests
 
 - (void)requestVerificationByDMWithUserId:(NSString*)userId
-                                   roomId:(NSString*)roomId
+                                   roomId:(nullable NSString*)roomId
                              fallbackText:(NSString*)fallbackText
                                   methods:(NSArray<NSString*>*)methods
                                   success:(void(^)(MXKeyVerificationRequest *request))success
                                   failure:(void(^)(NSError *error))failure
 {
-    NSLog(@"[MXKeyVerification] requestVerificationByDMWithUserId: %@. RoomId: %@", userId, roomId);
+    if (roomId)
+    {
+        [self requestVerificationByDMWithUserId2:userId roomId:roomId fallbackText:fallbackText methods:methods success:success failure:failure];
+    }
+    else
+    {
+        // Use an existing direct room if any
+        MXRoom *room = [self.crypto.mxSession directJoinedRoomWithUserId:userId];
+        if (room)
+        {
+            [self requestVerificationByDMWithUserId2:userId roomId:room.roomId fallbackText:fallbackText methods:methods success:success failure:failure];
+        }
+        else
+        {
+            // Create a new DM with E2E by default if possible
+            [self.crypto.mxSession canEnableE2EByDefaultInNewRoomWithUsers:@[userId] success:^(BOOL canEnableE2E) {
+                MXRoomCreationParameters *roomCreationParameters = [MXRoomCreationParameters parametersForDirectRoomWithUser:userId];
+                
+                if (canEnableE2E)
+                {
+                    roomCreationParameters.initialStateEvents = @[
+                                                                  [MXRoomCreationParameters initialStateEventForEncryptionWithAlgorithm:kMXCryptoMegolmAlgorithm
+                                                                   ]];
+                }
 
+                [self.crypto.mxSession createRoomWithParameters:roomCreationParameters success:^(MXRoom *room) {
+                    [self requestVerificationByDMWithUserId2:userId roomId:room.roomId fallbackText:fallbackText methods:methods success:success failure:failure];
+                } failure:failure];
+            } failure:failure];
+        }
+    }
+}
+
+- (void)requestVerificationByDMWithUserId2:(NSString*)userId
+                                    roomId:(NSString*)roomId
+                              fallbackText:(NSString*)fallbackText
+                                   methods:(NSArray<NSString*>*)methods
+                                   success:(void(^)(MXKeyVerificationRequest *request))success
+                                   failure:(void(^)(NSError *error))failure
+{
+    NSLog(@"[MXKeyVerification] requestVerificationByDMWithUserId: %@. RoomId: %@", userId, roomId);
+    
     MXKeyVerificationRequestJSONModel *request = [MXKeyVerificationRequestJSONModel new];
     request.body = fallbackText;
     request.methods = methods;
     request.to = userId;
     request.fromDevice = _crypto.myDevice.deviceId;
-
+    
     [self sendEventOfType:kMXEventTypeStringRoomMessage toRoom:roomId content:request.JSONDictionary success:^(NSString *eventId) {
-
+        
         // Build the corresponding the event
         MXRoom *room = [self.crypto.mxSession roomWithRoomId:roomId];
         MXEvent *event = [room fakeRoomMessageEventWithEventId:eventId andContent:request.JSONDictionary];
-
+        
         MXKeyVerificationRequest *request = [self verificationRequestInDMEvent:event];
         [request updateState:MXKeyVerificationRequestStatePending notifiy:YES];
         [self addPendingRequest:request notify:NO];
-
+        
         success(request);
     } failure:failure];
 }
@@ -117,10 +157,55 @@ static NSArray<MXEventTypeString> *kMXDeviceVerificationManagerDMEventTypes;
 - (void)beginKeyVerificationWithUserId:(NSString*)userId
                            andDeviceId:(NSString*)deviceId
                                 method:(NSString*)method
-                               success:(void(^)(MXDeviceVerificationTransaction *transaction))success
+                               success:(void(^)(MXKeyVerificationTransaction *transaction))success
                                failure:(void(^)(NSError *error))failure
 {
     [self beginKeyVerificationWithUserId:userId andDeviceId:deviceId dmRoomId:nil dmEventId:nil method:method success:success failure:failure];
+}
+
+- (void)beginKeyVerificationFromRequest:(MXKeyVerificationRequest*)request
+                                 method:(NSString*)method
+                                success:(void(^)(MXKeyVerificationTransaction *transaction))success
+                                failure:(void(^)(NSError *error))failure
+{
+    NSLog(@"[MXKeyVerification] beginKeyVerificationFromRequest: event: %@", request.requestId);
+    
+    // Sanity checks
+    if (!request.otherDevice)
+    {
+        NSError *error = [NSError errorWithDomain:MXKeyVerificationErrorDomain
+                                             code:MXKeyVerificationUnknownDeviceCode
+                                         userInfo:@{
+                                                    NSLocalizedDescriptionKey: [NSString stringWithFormat:@"from_device not found"]
+                                                    }];
+        failure(error);
+        return;
+    }
+    
+    if (request.state != MXKeyVerificationRequestStateAccepted)
+    {
+        NSError *error = [NSError errorWithDomain:MXKeyVerificationErrorDomain
+                                             code:MXKeyVerificationInvalidStateCode
+                                         userInfo:@{
+                                                    NSLocalizedDescriptionKey: [NSString stringWithFormat:@"The verification request has not been accepted. Current state: %@", @(request.state)]
+                                                    }];
+        failure(error);
+        return;
+    }
+    
+    if ([request isKindOfClass:MXKeyVerificationByDMRequest.class])
+    {
+        MXKeyVerificationByDMRequest *requestByDM = (MXKeyVerificationByDMRequest*)request;
+        [self beginKeyVerificationWithUserId:request.otherUser andDeviceId:request.otherDevice dmRoomId:requestByDM.roomId dmEventId:requestByDM.eventId method:method success:^(MXKeyVerificationTransaction *transaction) {
+            [self removePendingRequestWithRequestId:request.requestId];
+            success(transaction);
+        } failure:failure];
+    }
+    else
+    {
+        // Requests by to_device are not supported
+        NSParameterAssert(NO);
+    }
 }
 
 - (void)beginKeyVerificationWithUserId:(NSString*)userId
@@ -128,7 +213,7 @@ static NSArray<MXEventTypeString> *kMXDeviceVerificationManagerDMEventTypes;
                               dmRoomId:(nullable NSString*)dmRoomId
                              dmEventId:(nullable NSString*)dmEventId
                                 method:(NSString*)method
-                               success:(void(^)(MXDeviceVerificationTransaction *transaction))success
+                               success:(void(^)(MXKeyVerificationTransaction *transaction))success
                                failure:(void(^)(NSError *error))failure
 {
     NSLog(@"[MXKeyVerification] beginKeyVerification: device: %@:%@ roomId: %@ method:%@", userId, deviceId, dmRoomId, method);
@@ -136,7 +221,7 @@ static NSArray<MXEventTypeString> *kMXDeviceVerificationManagerDMEventTypes;
     // Make sure we have other device keys
     [self loadDeviceWithDeviceId:deviceId andUserId:userId success:^(MXDeviceInfo *otherDevice) {
 
-        MXDeviceVerificationTransaction *transaction;
+        MXKeyVerificationTransaction *transaction;
         NSError *error;
 
         // We support only SAS at the moment
@@ -157,8 +242,8 @@ static NSArray<MXEventTypeString> *kMXDeviceVerificationManagerDMEventTypes;
         }
         else
         {
-            error = [NSError errorWithDomain:MXDeviceVerificationErrorDomain
-                                        code:MXDeviceVerificationUnsupportedMethodCode
+            error = [NSError errorWithDomain:MXKeyVerificationErrorDomain
+                                        code:MXKeyVerificationUnsupportedMethodCode
                                     userInfo:@{
                                                NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Unsupported verification method: %@", method]
                                                }];
@@ -181,13 +266,13 @@ static NSArray<MXEventTypeString> *kMXDeviceVerificationManagerDMEventTypes;
     }];
 }
 
-- (void)transactions:(void(^)(NSArray<MXDeviceVerificationTransaction*> *transactions))complete
+- (void)transactions:(void(^)(NSArray<MXKeyVerificationTransaction*> *transactions))complete
 {
     MXWeakify(self);
     dispatch_async(self->cryptoQueue, ^{
         MXStrongifyAndReturnIfNil(self);
 
-        NSArray<MXDeviceVerificationTransaction*> *transactions = self->transactions.allObjects;
+        NSArray<MXKeyVerificationTransaction*> *transactions = self->transactions.allObjects;
         dispatch_async(dispatch_get_main_queue(), ^{
             complete(transactions);
         });
@@ -212,8 +297,8 @@ static NSArray<MXEventTypeString> *kMXDeviceVerificationManagerDMEventTypes;
     }
     else
     {
-        NSError *error = [NSError errorWithDomain:MXDeviceVerificationErrorDomain
-                                             code:MXDeviceVerificationUnknownIdentifier
+        NSError *error = [NSError errorWithDomain:MXKeyVerificationErrorDomain
+                                             code:MXKeyVerificationUnknownIdentifier
                                          userInfo:@{
                                                     NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Unknown id or not supported transport"]
                                                     }];
@@ -257,7 +342,7 @@ static NSArray<MXEventTypeString> *kMXDeviceVerificationManagerDMEventTypes;
     MXKeyVerification *keyVerification;
 
     // First, check if this is a transaction in progress
-    MXDeviceVerificationTransaction *transaction = [self transactionWithTransactionId:keyVerificationId];
+    MXKeyVerificationTransaction *transaction = [self transactionWithTransactionId:keyVerificationId];
     if (transaction)
     {
         keyVerification = [MXKeyVerification new];
@@ -285,7 +370,8 @@ static NSArray<MXEventTypeString> *kMXDeviceVerificationManagerDMEventTypes;
 {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        kMXDeviceVerificationManagerDMEventTypes = @[
+        kMXKeyVerificationManagerDMEventTypes = @[
+                                                    kMXEventTypeStringKeyVerificationReady,
                                                     kMXEventTypeStringKeyVerificationStart,
                                                     kMXEventTypeStringKeyVerificationAccept,
                                                     kMXEventTypeStringKeyVerificationKey,
@@ -333,36 +419,28 @@ static NSArray<MXEventTypeString> *kMXDeviceVerificationManagerDMEventTypes;
 
 #pragma mark - Requests
 
-- (void)acceptVerificationRequest:(MXKeyVerificationRequest*)request
-                           method:(NSString*)method
-                          success:(void(^)(MXDeviceVerificationTransaction *transaction))success
-                          failure:(void(^)(NSError *error))failure
+- (MXHTTPOperation*)sendToOtherInRequest:(MXKeyVerificationRequest*)request
+                               eventType:(NSString*)eventType
+                                 content:(NSDictionary*)content
+                                 success:(dispatch_block_t)success
+                                 failure:(void (^)(NSError *error))failure
 {
-    NSLog(@"[MXKeyVerification] acceptVerificationByDMRequest: event: %@", request.requestId);
-
-    // Sanity checks
-    NSString *fromDevice = request.fromDevice;
-    if (!fromDevice)
-    {
-        NSError *error = [NSError errorWithDomain:MXDeviceVerificationErrorDomain
-                                             code:MXDeviceVerificationUnknownDeviceCode
-                                         userInfo:@{
-                                                    NSLocalizedDescriptionKey: [NSString stringWithFormat:@"from_device not found"]
-                                                    }];
-        failure(error);
-        return;
-    }
-
+    NSLog(@"[MXKeyVerification] sendToOtherInRequest: eventType: %@\n%@",
+          eventType, content);
+    
+    MXHTTPOperation *operation;
     if ([request isKindOfClass:MXKeyVerificationByDMRequest.class])
     {
         MXKeyVerificationByDMRequest *requestByDM = (MXKeyVerificationByDMRequest*)request;
-        [self beginKeyVerificationWithUserId:request.sender andDeviceId:fromDevice dmRoomId:requestByDM.roomId dmEventId:requestByDM.eventId method:method success:success failure:failure];
+        operation = [self sendMessage:request.otherUser roomId:requestByDM.roomId eventType:eventType relatedTo:requestByDM.eventId content:content success:success failure:failure];
     }
     else
     {
         // Requests by to_device are not supported
         NSParameterAssert(NO);
     }
+    
+    return operation;
 }
 
 - (void)cancelVerificationRequest:(MXKeyVerificationRequest*)request
@@ -372,7 +450,7 @@ static NSArray<MXEventTypeString> *kMXDeviceVerificationManagerDMEventTypes;
     MXTransactionCancelCode *cancelCode = MXTransactionCancelCode.user;
 
     // If there is transaction in progress, cancel it
-    MXDeviceVerificationTransaction *transaction = [self transactionWithTransactionId:request.requestId];
+    MXKeyVerificationTransaction *transaction = [self transactionWithTransactionId:request.requestId];
     if (transaction)
     {
         [self cancelTransaction:transaction code:cancelCode];
@@ -380,37 +458,24 @@ static NSArray<MXEventTypeString> *kMXDeviceVerificationManagerDMEventTypes;
     else
     {
         // Else only cancel the request
-        if ([request isKindOfClass:MXKeyVerificationByDMRequest.class])
-        {
-            MXKeyVerificationByDMRequest *requestByDM = (MXKeyVerificationByDMRequest*)request;
-
-            MXKeyVerificationCancel *cancel = [MXKeyVerificationCancel new];
-            cancel.transactionId = transaction.transactionId;
-            cancel.code = cancelCode.value;
-            cancel.reason = cancelCode.humanReadable;
-
-            [self sendMessage:request.sender roomId:requestByDM.roomId eventType:kMXEventTypeStringKeyVerificationCancel relatedTo:requestByDM.eventId content:cancel.JSONDictionary success:success failure:failure];
-        }
-        else
-        {
-            // Requests by to_device are not supported
-            NSParameterAssert(NO);
-        }
+        MXKeyVerificationCancel *cancel = [MXKeyVerificationCancel new];
+        cancel.transactionId = transaction.transactionId;
+        cancel.code = cancelCode.value;
+        cancel.reason = cancelCode.humanReadable;
+        
+        [self sendToOtherInRequest:request eventType:kMXEventTypeStringKeyVerificationCancel content:cancel.JSONDictionary success:success failure:failure];
     }
 }
 
 
 #pragma mark - Transactions
 
-- (MXHTTPOperation*)sendToOtherInTransaction:(MXDeviceVerificationTransaction*)transaction
+- (MXHTTPOperation*)sendToOtherInTransaction:(MXKeyVerificationTransaction*)transaction
                                    eventType:(NSString*)eventType
                                      content:(NSDictionary*)content
                                      success:(void (^)(void))success
                                      failure:(void (^)(NSError *error))failure
 {
-    MXUsersDevicesMap<NSDictionary*> *contentMap = [[MXUsersDevicesMap alloc] init];
-    [contentMap setObject:content forUser:transaction.otherUserId andDevice:transaction.otherDeviceId];
-
     NSLog(@"[MXKeyVerification] sendToOtherInTransaction%@: eventType: %@\n%@",
           transaction.dmEventId ? @"(DM)" : @"",
           eventType, content);
@@ -430,8 +495,10 @@ static NSArray<MXEventTypeString> *kMXDeviceVerificationManagerDMEventTypes;
 }
 
 
-- (void)cancelTransaction:(MXDeviceVerificationTransaction*)transaction code:(MXTransactionCancelCode*)code
+- (void)cancelTransaction:(MXKeyVerificationTransaction*)transaction code:(MXTransactionCancelCode*)code
 {
+    NSLog(@"[MXKeyVerification] cancelTransaction. code: %@", code.value);
+    
     MXKeyVerificationCancel *cancel = [MXKeyVerificationCancel new];
     cancel.transactionId = transaction.transactionId;
     cancel.code = code.value;
@@ -490,6 +557,10 @@ static NSArray<MXEventTypeString> *kMXDeviceVerificationManagerDMEventTypes;
     dispatch_async(cryptoQueue, ^{
         switch (event.eventType)
         {
+            case MXEventTypeKeyVerificationReady:
+                [self handleReadyEvent:event];
+                break;
+                
             case MXEventTypeKeyVerificationStart:
                 [self handleStartEvent:event];
                 break;
@@ -516,6 +587,26 @@ static NSArray<MXEventTypeString> *kMXDeviceVerificationManagerDMEventTypes;
     });
 }
 
+- (void)handleReadyEvent:(MXEvent*)event
+{
+    NSLog(@"[MXKeyVerification] handleReadyEvent");
+    
+    MXKeyVerificationReady *keyVerificationReady;
+    MXJSONModelSetMXJSONModel(keyVerificationReady, MXKeyVerificationReady, event.content);
+    
+    if (!keyVerificationReady)
+    {
+        return;
+    }
+    
+    NSString *requestId = keyVerificationReady.transactionId;
+    MXKeyVerificationRequest *request = [self pendingRequestWithRequestId:requestId];
+    if (request)
+    {
+        [request handleReady:keyVerificationReady];
+    }
+}
+    
 - (void)handleStartEvent:(MXEvent*)event
 {
     NSLog(@"[MXKeyVerification] handleStartEvent");
@@ -532,7 +623,15 @@ static NSArray<MXEventTypeString> *kMXDeviceVerificationManagerDMEventTypes;
     MXKeyVerificationRequest *request = [self pendingRequestWithRequestId:requestId];
     if (request)
     {
-        [request handleStart:keyVerificationStart];
+        // The other party decided to create a transaction from the request
+        // The request is complete
+        [self removePendingRequestWithRequestId:request.requestId];
+    }
+    else if ([event.relatesTo.relationType isEqualToString:MXEventRelationTypeReference])
+    {
+        // This is a start response to a request we did not make. Ignore it
+        NSLog(@"[MXKeyVerification] handleStartEvent: Start event for verification by DM(%@) not triggered by this device. Ignore it", requestId);
+        return;
     }
 
     if (!keyVerificationStart.isValid)
@@ -549,7 +648,7 @@ static NSArray<MXEventTypeString> *kMXDeviceVerificationManagerDMEventTypes;
     // Make sure we have other device keys
     [self loadDeviceWithDeviceId:keyVerificationStart.fromDevice andUserId:event.sender success:^(MXDeviceInfo *otherDevice) {
 
-        MXDeviceVerificationTransaction *existingTransaction = [self transactionWithUser:event.sender andDevice:keyVerificationStart.fromDevice];
+        MXKeyVerificationTransaction *existingTransaction = [self transactionWithUser:event.sender andDevice:keyVerificationStart.fromDevice];
         if (existingTransaction)
         {
             NSLog(@"[MXKeyVerification] handleStartEvent: already existing transaction. Cancel both");
@@ -560,7 +659,7 @@ static NSArray<MXEventTypeString> *kMXDeviceVerificationManagerDMEventTypes;
         }
 
         // Multiple keyshares between two devices: any two devices may only have at most one key verification in flight at a time.
-        NSArray<MXDeviceVerificationTransaction*> *transactionsWithUser = [self transactionsWithUser:event.sender];
+        NSArray<MXKeyVerificationTransaction*> *transactionsWithUser = [self transactionsWithUser:event.sender];
         if (transactionsWithUser.count)
         {
             NSLog(@"[MXKeyVerification] handleStartEvent: already existing transaction with the user. Cancel both");
@@ -578,6 +677,12 @@ static NSArray<MXEventTypeString> *kMXDeviceVerificationManagerDMEventTypes;
             if ([self isCreationDateValid:transaction])
             {
                 [self addTransaction:transaction];
+                
+                if (request)
+                {
+                    NSLog(@"[MXKeyVerification] handleStartEvent: auto accept incoming transaction in response of a request");
+                    [transaction accept];
+                }
             }
             else
             {
@@ -606,7 +711,7 @@ static NSArray<MXEventTypeString> *kMXDeviceVerificationManagerDMEventTypes;
 
     if (cancelContent)
     {
-        MXDeviceVerificationTransaction *transaction = [self transactionWithTransactionId:cancelContent.transactionId];
+        MXKeyVerificationTransaction *transaction = [self transactionWithTransactionId:cancelContent.transactionId];
         if (transaction)
         {
             [transaction handleCancel:cancelContent];
@@ -635,7 +740,7 @@ static NSArray<MXEventTypeString> *kMXDeviceVerificationManagerDMEventTypes;
 
     if (acceptContent)
     {
-        MXDeviceVerificationTransaction *transaction = [self transactionWithTransactionId:acceptContent.transactionId];
+        MXKeyVerificationTransaction *transaction = [self transactionWithTransactionId:acceptContent.transactionId];
         if (transaction)
         {
             [transaction handleAccept:acceptContent];
@@ -660,7 +765,7 @@ static NSArray<MXEventTypeString> *kMXDeviceVerificationManagerDMEventTypes;
 
     if (keyContent)
     {
-        MXDeviceVerificationTransaction *transaction = [self transactionWithTransactionId:keyContent.transactionId];
+        MXKeyVerificationTransaction *transaction = [self transactionWithTransactionId:keyContent.transactionId];
         if (transaction)
         {
             [transaction handleKey:keyContent];
@@ -685,7 +790,7 @@ static NSArray<MXEventTypeString> *kMXDeviceVerificationManagerDMEventTypes;
 
     if (macContent)
     {
-        MXDeviceVerificationTransaction *transaction = [self transactionWithTransactionId:macContent.transactionId];
+        MXKeyVerificationTransaction *transaction = [self transactionWithTransactionId:macContent.transactionId];
         if (transaction)
         {
             [transaction handleMac:macContent];
@@ -734,7 +839,7 @@ static NSArray<MXEventTypeString> *kMXDeviceVerificationManagerDMEventTypes;
 
 - (void)setupIncomingDMEvents
 {
-    [_crypto.mxSession listenToEventsOfTypes:kMXDeviceVerificationManagerDMEventTypes onEvent:^(MXEvent *event, MXTimelineDirection direction, id customObject) {
+    [_crypto.mxSession listenToEventsOfTypes:kMXKeyVerificationManagerDMEventTypes onEvent:^(MXEvent *event, MXTimelineDirection direction, id customObject) {
         if (direction == MXTimelineDirectionForwards
             && ![event.sender isEqualToString:self.crypto.mxSession.myUser.userId])
         {
@@ -745,7 +850,7 @@ static NSArray<MXEventTypeString> *kMXDeviceVerificationManagerDMEventTypes;
 
 - (BOOL)isVerificationByDMEventType:(MXEventTypeString)type
 {
-    return [kMXDeviceVerificationManagerDMEventTypes containsObject:type];
+    return [kMXKeyVerificationManagerDMEventTypes containsObject:type];
 }
 
 - (MXHTTPOperation*)sendMessage:(NSString*)userId
@@ -797,9 +902,9 @@ static NSArray<MXEventTypeString> *kMXDeviceVerificationManagerDMEventTypes;
 {
     NSLog(@"[MXKeyVerification] handleKeyVerificationRequest: %@", request);
 
-    if (![request.to isEqualToString:self.crypto.mxSession.myUser.userId])
+    if (![request.request.to isEqualToString:self.crypto.mxSession.myUser.userId])
     {
-        NSLog(@"[MXKeyVerification] handleKeyVerificationRequest: Request for another user: %@", request.to);
+        NSLog(@"[MXKeyVerification] handleKeyVerificationRequest: Request for another user: %@", request.request.to);
         return;
     }
 
@@ -842,8 +947,8 @@ static NSArray<MXEventTypeString> *kMXDeviceVerificationManagerDMEventTypes;
             }
             else
             {
-                NSError *error = [NSError errorWithDomain:MXDeviceVerificationErrorDomain
-                                                     code:MXDeviceVerificationUnknownDeviceCode
+                NSError *error = [NSError errorWithDomain:MXKeyVerificationErrorDomain
+                                                     code:MXKeyVerificationUnknownDeviceCode
                                                  userInfo:@{
                                                             NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Unknown device: %@:%@", userId, deviceId]
                                                             }];
@@ -869,8 +974,8 @@ static NSArray<MXEventTypeString> *kMXDeviceVerificationManagerDMEventTypes;
     MXRoom *room = [_crypto.mxSession roomWithRoomId:roomId];
     if (!room)
     {
-        NSError *error = [NSError errorWithDomain:MXDeviceVerificationErrorDomain
-                                             code:MXDeviceVerificationUnknownRoomCode
+        NSError *error = [NSError errorWithDomain:MXKeyVerificationErrorDomain
+                                             code:MXKeyVerificationUnknownRoomCode
                                          userInfo:@{
                                                     NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Unknown room: %@", roomId]
                                                     }];
@@ -930,9 +1035,9 @@ static NSArray<MXEventTypeString> *kMXDeviceVerificationManagerDMEventTypes;
 
         if (notify)
         {
-            [[NSNotificationCenter defaultCenter] postNotificationName:MXDeviceVerificationManagerNewRequestNotification object:self userInfo:
+            [[NSNotificationCenter defaultCenter] postNotificationName:MXKeyVerificationManagerNewRequestNotification object:self userInfo:
              @{
-               MXDeviceVerificationManagerNotificationRequestKey: request
+               MXKeyVerificationManagerNotificationRequestKey: request
                }];
         }
     }
@@ -1025,20 +1130,20 @@ static NSArray<MXEventTypeString> *kMXDeviceVerificationManagerDMEventTypes;
 
 #pragma mark - Transactions queue
 
-- (MXDeviceVerificationTransaction*)transactionWithUser:(NSString*)userId andDevice:(NSString*)deviceId
+- (MXKeyVerificationTransaction*)transactionWithUser:(NSString*)userId andDevice:(NSString*)deviceId
 {
     return [transactions objectForDevice:deviceId forUser:userId];
 }
 
-- (NSArray<MXDeviceVerificationTransaction*>*)transactionsWithUser:(NSString*)userId
+- (NSArray<MXKeyVerificationTransaction*>*)transactionsWithUser:(NSString*)userId
 {
     return [transactions objectsForUser:userId];
 }
 
-- (MXDeviceVerificationTransaction*)transactionWithTransactionId:(NSString*)transactionId
+- (MXKeyVerificationTransaction*)transactionWithTransactionId:(NSString*)transactionId
 {
-    MXDeviceVerificationTransaction *transaction;
-    for (MXDeviceVerificationTransaction *t in transactions.allObjects)
+    MXKeyVerificationTransaction *transaction;
+    for (MXKeyVerificationTransaction *t in transactions.allObjects)
     {
         if ([t.transactionId isEqualToString:transactionId])
         {
@@ -1050,22 +1155,22 @@ static NSArray<MXEventTypeString> *kMXDeviceVerificationManagerDMEventTypes;
     return transaction;
 }
 
-- (void)addTransaction:(MXDeviceVerificationTransaction*)transaction
+- (void)addTransaction:(MXKeyVerificationTransaction*)transaction
 {
     [transactions setObject:transaction forUser:transaction.otherUserId andDevice:transaction.otherDeviceId];
     [self scheduleTransactionTimeoutTimer];
 
     dispatch_async(dispatch_get_main_queue(),^{
-        [[NSNotificationCenter defaultCenter] postNotificationName:MXDeviceVerificationManagerNewTransactionNotification object:self userInfo:
+        [[NSNotificationCenter defaultCenter] postNotificationName:MXKeyVerificationManagerNewTransactionNotification object:self userInfo:
          @{
-           MXDeviceVerificationManagerNotificationTransactionKey: transaction
+           MXKeyVerificationManagerNotificationTransactionKey: transaction
            }];
     });
 }
 
 - (void)removeTransactionWithTransactionId:(NSString*)transactionId
 {
-    MXDeviceVerificationTransaction *transaction = [self transactionWithTransactionId:transactionId];
+    MXKeyVerificationTransaction *transaction = [self transactionWithTransactionId:transactionId];
     if (transaction)
     {
         [transactions removeObjectForUser:transaction.otherUserId andDevice:transaction.otherDeviceId];
@@ -1076,7 +1181,7 @@ static NSArray<MXEventTypeString> *kMXDeviceVerificationManagerDMEventTypes;
 - (nullable NSDate*)oldestTransactionCreationDate
 {
     NSDate *oldestCreationDate;
-    for (MXDeviceVerificationTransaction *transaction in transactions.allObjects)
+    for (MXKeyVerificationTransaction *transaction in transactions.allObjects)
     {
         if (!oldestCreationDate
             || transaction.creationDate.timeIntervalSince1970 < oldestCreationDate.timeIntervalSince1970)
@@ -1087,7 +1192,7 @@ static NSArray<MXEventTypeString> *kMXDeviceVerificationManagerDMEventTypes;
     return oldestCreationDate;
 }
 
-- (BOOL)isCreationDateValid:(MXDeviceVerificationTransaction*)transaction
+- (BOOL)isCreationDateValid:(MXKeyVerificationTransaction*)transaction
 {
     return (transaction.creationDate.timeIntervalSinceNow > -MXTransactionTimeout);
 }
@@ -1151,7 +1256,7 @@ static NSArray<MXEventTypeString> *kMXDeviceVerificationManagerDMEventTypes;
 
 - (void)checkTransactionTimeouts
 {
-    for (MXDeviceVerificationTransaction *transaction in transactions.allObjects)
+    for (MXKeyVerificationTransaction *transaction in transactions.allObjects)
     {
         if (![self isCreationDateValid:transaction])
         {

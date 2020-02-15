@@ -29,7 +29,7 @@
 #import "MXIncomingRoomKeyRequestCancellation.h"
 
 #import "MXKeyBackup.h"
-#import "MXDeviceVerificationManager.h"
+#import "MXKeyVerificationManager.h"
 #import "MXCrossSigning.h"
 #import "MXUsersTrustLevelSummary.h"
 
@@ -89,7 +89,7 @@ FOUNDATION_EXPORT NSString *const kMXCryptoRoomKeyRequestCancellationNotificatio
 /**
  The device verification manager.
  */
-@property (nonatomic, readonly) MXDeviceVerificationManager *deviceVerificationManager;
+@property (nonatomic, readonly) MXKeyVerificationManager *keyVerificationManager;
 
 /**
  The cross-signing manager.
@@ -258,6 +258,15 @@ FOUNDATION_EXPORT NSString *const kMXCryptoRoomKeyRequestCancellationNotificatio
 - (void)trustLevelSummaryForUserIds:(NSArray<NSString*>*)userIds
                             success:(void (^)(MXUsersTrustLevelSummary *usersTrustLevelSummary))success
                             failure:(void (^)(NSError *error))failure;
+
+/**
+ Get the stored summary of users trust level (trusted users and devices count).
+ 
+ @param userIds The user ids.
+ @return the trust summary.
+ */
+- (MXUsersTrustLevelSummary *)trustLevelSummaryForUserIds:(NSArray<NSString*>*)userIds;
+
 
 #pragma mark - Users keys
 

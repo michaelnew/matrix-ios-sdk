@@ -1,5 +1,5 @@
 /*
- Copyright 2020 The Matrix.org Foundation C.I.C
+ Copyright 2020 New Vector Ltd
  
  Licensed under the Apache License, Version 2.0 (the "License");
  you may not use this file except in compliance with the License.
@@ -14,22 +14,16 @@
  limitations under the License.
  */
 
-#import <Foundation/Foundation.h>
-
 NS_ASSUME_NONNULL_BEGIN
 
 /**
- A summary of the trust for a group of users and their devices
+ The `MXAggregationPaginatedResponse` extension exposes internal operations.
  */
-@interface MXUsersTrustLevelSummary : NSObject <NSCoding>
+@interface MXAggregationPaginatedResponse()
 
-// The ratio of trusted users
-@property (nonatomic, strong, readonly) NSProgress *trustedUsersProgress;
-
-// The ratio of trusted devices for trusted users
-@property (nonatomic, strong, readonly) NSProgress *trustedDevicesProgress;
-
-- (instancetype)initWithTrustedUsersProgress:(NSProgress*)trustedUsersProgress andTrustedDevicesProgress:(NSProgress*)trustedDevicesProgress;
+- (instancetype)initWithOriginalEvent:(MXEvent*)originalEvent
+                                chunk:(NSArray<MXEvent*> *)chunk
+                            nextBatch:(nullable NSString *)nextBatch;
 
 @end
 
