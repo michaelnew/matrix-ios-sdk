@@ -26,6 +26,14 @@ public enum MXAccountDataType: Equatable, Hashable {
     case pushRules
     case ignoredUserList
     case other(String)
+
+    public static func ==(lhs: MXAccountDataType, rhs: MXAccountDataType) -> Bool {
+        return lhs.rawValue == rhs.rawValue
+    }
+
+    public var hashValue: Int {
+        return self.rawValue.hashValue
+    }
     
     var rawValue: String {
         switch self {
@@ -42,6 +50,19 @@ public enum MXAccountDataType: Equatable, Hashable {
 
 /// Method of inviting a user to a room
 public enum MXRoomInvitee: Equatable, Hashable {
+    public static func ==(lhs: MXRoomInvitee, rhs: MXRoomInvitee) -> Bool {
+        //TODO: using hashes for equality is probably not a good idea
+        return lhs.hashValue == rhs.hashValue
+    }
+    
+    public var hashValue: Int {
+        switch self {
+        case .userId(let value): return value.hashValue
+        case .email(let value): return value.hashValue
+        case .thirdPartyId(let value): return value.hashValue
+        }
+    }
+    
     
     /// Invite a user by username
     case userId(String)

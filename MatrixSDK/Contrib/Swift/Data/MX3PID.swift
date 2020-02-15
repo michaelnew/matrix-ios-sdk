@@ -42,6 +42,14 @@ public struct MX3PID {
                 self = .other(identifier)
             }
         }
+
+        public static func == (lhs: Medium, rhs: Medium) -> Bool {
+            return lhs.identifier == rhs.identifier
+        }
+
+        public var hashValue: Int {
+            return self.identifier.hashValue
+        }
     }
     
     public var medium: Medium
@@ -69,8 +77,13 @@ extension MX3PID : Hashable {
         return lhs.medium.identifier == rhs.medium.identifier && lhs.address == rhs.address
     }
     
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(medium.identifier)
-        hasher.combine(address)
+    //public func hash(into hasher: inout Hasher) {
+    //    hasher.combine(medium.identifier)
+    //    hasher.combine(address)
+    //}
+
+
+    public var hashValue: Int {
+        return "\(medium.identifier)\(address)".hashValue
     }
 }

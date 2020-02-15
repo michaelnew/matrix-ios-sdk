@@ -45,6 +45,15 @@ public enum MXLoginFlowType: Equatable, Hashable {
         let flowTypess: [MXLoginFlowType] = [.password, .recaptcha, .OAuth2, .emailIdentity, .token, .dummy, .emailCode]
         self = flowTypess.first(where: { $0.identifier == identifier }) ?? .other(identifier)
     }
+
+    public static func == (lhs: MXLoginFlowType, rhs: MXLoginFlowType) -> Bool {
+        return lhs.identifier == rhs.identifier
+    }
+ 
+    public var hashValue: Int {
+        return self.identifier.hashValue
+    }
+
 }
 
 
@@ -60,6 +69,14 @@ public enum MXPusherKind: Equatable, Hashable {
         case .none: return NSNull()
         case .custom(let value): return value as NSString
         }
+    }
+
+    public static func == (lhs: MXPusherKind, rhs: MXPusherKind) -> Bool {
+        return lhs.objectValue == rhs.objectValue
+    }
+ 
+    public var hashValue: Int {
+        return self.objectValue.hashValue
     }
 }
 
@@ -110,5 +127,13 @@ public enum MXPushRuleScope: Equatable, Hashable {
     public init(identifier: String) {
         let scopes: [MXPushRuleScope] = [.global]
         self = scopes.first(where: { $0.identifier == identifier }) ?? .device(profileTag: identifier)
+    }
+
+    public static func == (lhs: MXPushRuleScope, rhs: MXPushRuleScope) -> Bool {
+        return lhs.identifier == rhs.identifier
+    }
+ 
+    public var hashValue: Int {
+        return self.identifier.hashValue
     }
 }
